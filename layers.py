@@ -121,7 +121,7 @@ class ConvBlock(nn.Module):
 class Conv3x3(nn.Module):
     """Layer to pad and convolve input
     """
-    def __init__(self, in_channels, out_channels, use_refl=True):
+    def __init__(self, in_channels, out_channels, use_refl=False):
         super(Conv3x3, self).__init__()
 
         if use_refl:
@@ -193,11 +193,23 @@ class Project3D(nn.Module):
         return pix_coords
 
 
-def upsample(x):
-    """Upsample input tensor by a factor of 2
-    """
-    return F.interpolate(x, scale_factor=2, mode="nearest")
+# def upsample(x):
+#     """Upsample input tensor by a factor of 2
+#     """
+#     return F.interpolate(x, scale_factor=2, mode="nearest")
 
+# def upsample(x, scale=2):
+#     sh = torch.tensor(x.shape)
+# #     sh = x.shape
+#     return F.interpolate(x, size=(int(sh[2]*scale), int(sh[3]*scale)), mode='nearest')
+
+class upsample(nn.Module):
+    def __init__(self):
+        super(upsample, self).__init__()
+    def forward(self, x, scale=2):
+        sh = torch.tensor(x.shape)
+        x = F.interpolate(x, size=(int(sh[2]*scale), int(sh[3]*scale)), mode = 'nearest')
+        return x
 
 def get_smooth_loss(disp, img):
     """Computes the smoothness loss for a disparity image

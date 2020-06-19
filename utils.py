@@ -9,6 +9,7 @@ import os
 import hashlib
 import zipfile
 from six.moves import urllib
+import matplotlib.pyplot as plt
 
 
 def readlines(filename):
@@ -27,6 +28,8 @@ def normalize_image(x):
     d = ma - mi if ma != mi else 1e5
     return (x - mi) / d
 
+
+    
 
 def sec_to_hm(t):
     """Convert time in seconds to time in hours, minutes and seconds

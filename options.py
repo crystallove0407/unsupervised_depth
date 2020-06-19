@@ -20,11 +20,17 @@ class MonodepthOptions:
         self.parser.add_argument("--data_path",
                                  type=str,
                                  help="path to the training data",
-                                 default=os.path.join(file_dir, "kitti_data"))
+                                 default=os.path.join("/work", 
+                                                      "garin0115",
+                                                      "datasets",
+                                                      "kitti_data"))
         self.parser.add_argument("--log_dir",
                                  type=str,
                                  help="log directory",
-                                 default=os.path.join(os.path.expanduser("~"), "tmp"))
+                                 default=os.path.join(os.path.expanduser("~"), 
+                                                      "depth",
+                                                      "monodepth2",
+                                                      "models"))
 
         # TRAINING options
         self.parser.add_argument("--model_name",
@@ -52,11 +58,11 @@ class MonodepthOptions:
         self.parser.add_argument("--height",
                                  type=int,
                                  help="input image height",
-                                 default=192)
+                                 default=256)
         self.parser.add_argument("--width",
                                  type=int,
                                  help="input image width",
-                                 default=640)
+                                 default=832)
         self.parser.add_argument("--disparity_smoothness",
                                  type=float,
                                  help="disparity smoothness weight",
@@ -143,6 +149,9 @@ class MonodepthOptions:
                                  default=12)
 
         # LOADING options
+        self.parser.add_argument("--restore_model",
+                                 help="if set, restore model from the interrupted epoch",
+                                 action="store_true")
         self.parser.add_argument("--load_weights_folder",
                                  type=str,
                                  help="name of model to load")

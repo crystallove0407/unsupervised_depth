@@ -14,7 +14,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tensorboardX import SummaryWriter
-
+import matplotlib.pyplot as plt
+import cv2
 import json
 
 from utils import *
@@ -24,18 +25,23 @@ from layers import *
 import datasets
 import networks
 from IPython import embed
-
+from collections import OrderedDict
 
 class Trainer:
     def __init__(self, options):
+        self.skipSky = 0
+        self.skyLoss = 1
         self.opt = options
-        self.log_path = os.path.join(self.opt.log_dir, self.opt.model_name)
+        self.log_path = os.path.join(self.opt.log_dir, 
+                                     "{}_{}x{}".format(self.opt.model_name, 
+                                                       self.opt.height, 
+                                                       self.opt.width))
 
         # checking height and width are multiples of 32
         assert self.opt.height % 32 == 0, "'height' must be a multiple of 32"
         assert self.opt.width % 32 == 0, "'width' must be a multiple of 32"
 
-        self.models = {}
+        self.models = OrderedDict()
         self.parameters_to_train = []
 
         self.device = torch.device("cpu" if self.opt.no_cuda else "cuda")
@@ -50,16 +56,24 @@ class Trainer:
 
         if self.opt.use_stereo:
             self.opt.frame_ids.append("s")
-
+        
+        '''Encoder define
+        '''
         self.models["encoder"] = networks.ResnetEncoder(
             self.opt.num_layers, self.opt.weights_init == "pretrained")
-        self.models["encoder"].to(self.device)
-        self.parameters_to_train += list(self.models["encoder"].parameters())
+#         self.models["encoder"] = networks.ShuffleNetV2()
+#         self.models["encoder"] = networks.MobileNetV2()
+#         self.models["encoder"] = networks.MobileNetV3()
+#         self.models["encoder"] = networks.PeleeNet()
+#         self.models["encoder"] = networks.MnasNet()
+    
 
-        self.models["depth"] = networks.DepthDecoder(
-            self.models["encoder"].num_ch_enc, self.opt.scales)
-        self.models["depth"].to(self.device)
-        self.parameters_to_train += list(self.models["depth"].parameters())
+        '''Decoder define
+        '''
+        self.models["depth"] = networks.DepthDecoder(self.models["encoder"].num_ch_enc, pw=True, oneLayer=True)
+
+        
+
 
         if self.use_pose_net:
             if self.opt.pose_model_type == "separate_resnet":
@@ -67,9 +81,8 @@ class Trainer:
                     self.opt.num_layers,
                     self.opt.weights_init == "pretrained",
                     num_input_images=self.num_pose_frames)
-
-                self.models["pose_encoder"].to(self.device)
-                self.parameters_to_train += list(self.models["pose_encoder"].parameters())
+                
+                
 
                 self.models["pose"] = networks.PoseDecoder(
                     self.models["pose_encoder"].num_ch_enc,
@@ -83,25 +96,37 @@ class Trainer:
             elif self.opt.pose_model_type == "posecnn":
                 self.models["pose"] = networks.PoseCNN(
                     self.num_input_frames if self.opt.pose_model_input == "all" else 2)
+            
 
-            self.models["pose"].to(self.device)
-            self.parameters_to_train += list(self.models["pose"].parameters())
 
         if self.opt.predictive_mask:
             assert self.opt.disable_automasking, \
                 "When using predictive_mask, please disable automasking with --disable_automasking"
-
+            
             # Our implementation of the predictive masking baseline has the the same architecture
             # as our depth decoder. We predict a separate mask for each source frame.
             self.models["predictive_mask"] = networks.DepthDecoder(
                 self.models["encoder"].num_ch_enc, self.opt.scales,
                 num_output_channels=(len(self.opt.frame_ids) - 1))
-            self.models["predictive_mask"].to(self.device)
-            self.parameters_to_train += list(self.models["predictive_mask"].parameters())
+                
 
+        
+        
+
+        for key in self.models:
+            self.models[key].to(self.device)
+            self.parameters_to_train += list(self.models[key].parameters())
+        
+        enc_param_count = self.calc_param(self.models["encoder"])
+        dec_param_count = self.calc_param(self.models["depth"])
+        print("[info] Encoder parameter count:", enc_param_count)
+        print("[info] Decoder parameter count:", dec_param_count)
+        print("[info] Total parameter count:", enc_param_count + dec_param_count)
+        
+        
         self.model_optimizer = optim.Adam(self.parameters_to_train, self.opt.learning_rate)
         self.model_lr_scheduler = optim.lr_scheduler.StepLR(
-            self.model_optimizer, self.opt.scheduler_step_size, 0.1)
+            self.model_optimizer, self.opt.scheduler_step_size, 0.5)
 
         if self.opt.load_weights_folder is not None:
             self.load_model()
@@ -121,8 +146,9 @@ class Trainer:
         val_filenames = readlines(fpath.format("val"))
         img_ext = '.png' if self.opt.png else '.jpg'
 
-        num_train_samples = len(train_filenames)
-        self.num_total_steps = num_train_samples // self.opt.batch_size * self.opt.num_epochs
+        self.num_train_samples = len(train_filenames)
+        self.num_val_samples = len(val_filenames)
+        self.num_total_steps = self.num_train_samples // self.opt.batch_size * self.opt.num_epochs
 
         train_dataset = self.dataset(
             self.opt.data_path, train_filenames, self.opt.height, self.opt.width,
@@ -163,10 +189,19 @@ class Trainer:
 
         print("Using split:\n  ", self.opt.split)
         print("There are {:d} training items and {:d} validation items\n".format(
-            len(train_dataset), len(val_dataset)))
+            self.num_train_samples, self.num_val_samples))
 
         self.save_opts()
-
+    
+    
+    def calc_param(self, net):
+        net_params = filter(lambda p: p.requires_grad, net.parameters())
+        weight_count = 0
+        for param in net_params:
+            weight_count += np.prod(param.size())
+        return weight_count
+    
+    
     def set_train(self):
         """Convert all models to training mode
         """
@@ -182,18 +217,22 @@ class Trainer:
     def train(self):
         """Run the entire training pipeline
         """
-        self.epoch = 0
-        self.step = 0
+        if self.opt.restore_model:
+            start_epoch = int(self.opt.load_weights_folder.split('_')[-1]) + 1
+            self.step = self.num_train_samples // self.opt.batch_size * start_epoch
+        else:
+            start_epoch = 0
+            self.step = 0
         self.start_time = time.time()
-        for self.epoch in range(self.opt.num_epochs):
-            self.run_epoch()
+        for self.epoch in range(start_epoch, self.opt.num_epochs):
+            self.run_epoch(self.epoch)
             if (self.epoch + 1) % self.opt.save_frequency == 0:
                 self.save_model()
 
-    def run_epoch(self):
+    def run_epoch(self, epoch):
         """Run a single epoch of training and validation
         """
-        self.model_lr_scheduler.step()
+        self.model_lr_scheduler.step(epoch)
 
         print("Training")
         self.set_train()
@@ -211,10 +250,10 @@ class Trainer:
             duration = time.time() - before_op_time
 
             # log less frequently after the first 2000 steps to save time & disk space
-            early_phase = batch_idx % self.opt.log_frequency == 0 and self.step < 2000
-            late_phase = self.step % 2000 == 0
+            early_phase = batch_idx % self.opt.log_frequency == 0 #and self.step < 2000
+            #late_phase = self.step % 2000 == 0
 
-            if early_phase or late_phase:
+            if early_phase: #or late_phase:
                 self.log_time(batch_idx, duration, losses["loss"].cpu().data)
 
                 if "depth_gt" in inputs:
@@ -463,29 +502,79 @@ class Trainer:
             else:
                 reprojection_loss = reprojection_losses
 
-            if not self.opt.disable_automasking:
-                # add random numbers to break ties
-                identity_reprojection_loss += torch.randn(
-                    identity_reprojection_loss.shape).cuda() * 0.00001
+#             if not self.opt.disable_automasking:
+#                 #add random numbers to break ties
+#                 identity_reprojection_loss += torch.randn(
+#                     identity_reprojection_loss.shape).cuda() * 0.00001
 
-                combined = torch.cat((identity_reprojection_loss, reprojection_loss), dim=1)
+#                 combined = torch.cat((identity_reprojection_loss, reprojection_loss), dim=1) #(B, 4, 256, 832)
+#             else:
+#                 combined = reprojection_loss
+
+#             if combined.shape[1] == 1:
+#                 to_optimise = combined
+#             else:
+#                 to_optimise, idxs = torch.min(combined, dim=1)
+
+#             if not self.opt.disable_automasking:
+#                 outputs["identity_selection/{}".format(scale)] = (
+#                     idxs > identity_reprojection_loss.shape[1] - 1).float()
+
+            ### 我修改的
+            ### 上半部 1/3 不做 mask
+            if self.skipSky == False:
+                if not self.opt.disable_automasking:
+    #                 add random numbers to break ties
+                    identity_reprojection_loss += torch.randn(
+                        identity_reprojection_loss.shape).cuda() * 1e-6
+
+    #                 min reprojection loss
+                    combined = torch.cat((identity_reprojection_loss, reprojection_loss), dim=1)
+                    to_optimise, idxs = torch.min(combined, dim=1)
+                    min_reprojection_loss, _ = torch.min(reprojection_loss, dim=1)
+                    to_optimise[:, :self.opt.height//3, :] = min_reprojection_loss[:, :self.opt.height//3, :]
+
+                    outputs["identity_selection/{}".format(scale)] = (
+                        idxs > identity_reprojection_loss.shape[1] - 1).float()
+                    outputs["identity_selection/{}".format(scale)][:, :self.opt.height//3, :] = 1.
+            ###
             else:
-                combined = reprojection_loss
+            #做 Mask的地方值都給最小
+                if not self.opt.disable_automasking:
+                    # add random numbers to break ties
+                    identity_reprojection_loss += torch.randn(
+                        identity_reprojection_loss.shape).cuda() * 0.00001
 
-            if combined.shape[1] == 1:
-                to_optimise = combined
-            else:
-                to_optimise, idxs = torch.min(combined, dim=1)
+                    combined = torch.cat((identity_reprojection_loss, reprojection_loss), dim=1) #(B, 4, 256, 832)
+                else:
+                    combined = reprojection_loss
 
-            if not self.opt.disable_automasking:
-                outputs["identity_selection/{}".format(scale)] = (
-                    idxs > identity_reprojection_loss.shape[1] - 1).float()
+                if combined.shape[1] == 1:
+                    to_optimise = combined
+                else:
+                    to_optimise, idxs = torch.min(combined, dim=1)
 
+                if not self.opt.disable_automasking:
+                    outputs["identity_selection/{}".format(scale)] = (
+                        idxs > identity_reprojection_loss.shape[1] - 1).float()
+            ##
+            
+            
             loss += to_optimise.mean()
-
+#             print("[info] Total loss")
+#             print("scale", scale)
+#             print("depth loss:", to_optimise.mean())
+            
             mean_disp = disp.mean(2, True).mean(3, True)
             norm_disp = disp / (mean_disp + 1e-7)
             smooth_loss = get_smooth_loss(norm_disp, color)
+#             print("smooth loss:", self.opt.disparity_smoothness * smooth_loss / (2 ** scale))
+            
+            if self.skyLoss:
+                sky_loss = self.get_sky_loss(color, disp)
+                loss += 1e-5 * sky_loss / (2 ** scale)
+                
+#                 print("sky loss:", 1e-5 * sky_loss / (2 ** scale))
 
             loss += self.opt.disparity_smoothness * smooth_loss / (2 ** scale)
             total_loss += loss
@@ -494,7 +583,43 @@ class Trainer:
         total_loss /= self.num_scales
         losses["loss"] = total_loss
         return losses
-
+    
+    def get_sky_loss(self, color, disp):
+        loss = 0
+        disparity = disp.permute(0, 2, 3, 1).detach().cpu().numpy()
+        input = color.permute(0, 2, 3, 1).cpu().numpy()
+        input = np.uint8(255 * input)
+        B = input.shape[0]
+        have_sky = 0
+        for i in range(B):
+            segImg = self.get_sky_mask(input[i])
+            
+            sky_disp = segImg * disparity[i].squeeze()
+            if np.sum(sky_disp>0) > 0:
+                sky_disp_mean = sky_disp[sky_disp>0].mean()
+                loss += sky_disp_mean
+                have_sky += 1
+            
+        if have_sky > 0:
+            loss /= have_sky
+        return loss
+    
+    def get_sky_mask(self, color):
+        gray = cv2.cvtColor(color, cv2.COLOR_BGR2GRAY)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))
+        thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
+        thresh_dilation = cv2.dilate(thresh, kernel, anchor=(-1,-1), iterations=8)
+            
+        edges = cv2.Canny(gray, 1, 100)
+        edges_dilation = cv2.dilate(edges, kernel, anchor=(-1,-1), iterations=8)
+            
+        mask = thresh_dilation | edges_dilation
+        mask_dilation = cv2.dilate(mask, kernel, anchor=(-1,-1), iterations=8)
+        segImg = 255 - mask_dilation 
+        segImg[self.opt.height//3:, :] = 0
+        
+        return segImg
+    
     def compute_depth_losses(self, inputs, outputs, losses):
         """Compute depth metrics, to allow monitoring during training
 
@@ -540,6 +665,8 @@ class Trainer:
     def log(self, mode, inputs, outputs, losses):
         """Write an event to the tensorboard events file
         """
+        cm = plt.get_cmap('plasma')
+        
         writer = self.writers[mode]
         for l, v in losses.items():
             writer.add_scalar("{}".format(l), v, self.step)

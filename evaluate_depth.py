@@ -12,6 +12,7 @@ from utils import readlines
 from options import MonodepthOptions
 import datasets
 import networks
+import time
 
 cv2.setNumThreads(0)  # This speeds up evaluation 5x on our unix systems (OpenCV 3.3.1)
 
@@ -23,6 +24,12 @@ splits_dir = os.path.join(os.path.dirname(__file__), "splits")
 # to convert our stereo predictions to real-world scale we multiply our depths by 5.4.
 STEREO_SCALE_FACTOR = 5.4
 
+def calc_param(net):
+    net_params = filter(lambda p: p.requires_grad, net.parameters())
+    weight_count = 0
+    for param in net_params:
+        weight_count += np.prod(param.size())
+    return weight_count
 
 def compute_errors(gt, pred):
     """Computation of error metrics between predicted and ground truth depths
@@ -87,7 +94,21 @@ def evaluate(opt):
                                 pin_memory=True, drop_last=False)
 
         encoder = networks.ResnetEncoder(opt.num_layers, False)
-        depth_decoder = networks.DepthDecoder(encoder.num_ch_enc)
+#         encoder = networks.ShuffleNetV2()
+#         encoder = networks.MobileNetV2()
+#         encoder = networks.MobileNetV3()
+#         encoder = networks.PeleeNet()
+#         encoder = networks.MnasNet()
+#         depth_decoder = networks.DepthDecoder(encoder.num_ch_enc)
+        depth_decoder = networks.NNDecoder(
+                    encoder.num_ch_enc, kernel_size=53, dw=False)
+#         depth_decoder = networks.MJDecoder(encoder.num_ch_enc)
+#         depth_decoder = networks.MJ1x1Decoder(encoder.num_ch_enc)
+        enc_param_count = calc_param(encoder)
+        dec_param_count = calc_param(depth_decoder)
+        print("[info] Encoder parameter count:", enc_param_count)
+        print("[info] Decoder parameter count:", dec_param_count)
+        print("[info] Total parameter count:", enc_param_count + dec_param_count)
 
         model_dict = encoder.state_dict()
         encoder.load_state_dict({k: v for k, v in encoder_dict.items() if k in model_dict})
@@ -104,24 +125,27 @@ def evaluate(opt):
             encoder_dict['width'], encoder_dict['height']))
 
         with torch.no_grad():
+            start_time = time.time()
             for data in dataloader:
                 input_color = data[("color", 0, 0)].cuda()
 
                 if opt.post_process:
                     # Post-processed results require each image to have two forward passes
                     input_color = torch.cat((input_color, torch.flip(input_color, [3])), 0)
-
+                
                 output = depth_decoder(encoder(input_color))
 
                 pred_disp, _ = disp_to_depth(output[("disp", 0)], opt.min_depth, opt.max_depth)
                 pred_disp = pred_disp.cpu()[:, 0].numpy()
+#                 pred_disp = pred_disp[:, 0].numpy()
 
                 if opt.post_process:
                     N = pred_disp.shape[0] // 2
                     pred_disp = batch_post_process_disparity(pred_disp[:N], pred_disp[N:, :, ::-1])
 
                 pred_disps.append(pred_disp)
-
+            end_time = time.time()
+        total_time = end_time - start_time
         pred_disps = np.concatenate(pred_disps)
 
     else:
@@ -163,7 +187,8 @@ def evaluate(opt):
         quit()
 
     gt_path = os.path.join(splits_dir, opt.eval_split, "gt_depths.npz")
-    gt_depths = np.load(gt_path, fix_imports=True, encoding='latin1')["data"]
+    gt_depths = np.load(gt_path, fix_imports=True, encoding='latin1', allow_pickle=True)["data"]
+#     gt_depths = np.load(gt_path)["data"]
 
     print("-> Evaluating")
 
@@ -219,7 +244,7 @@ def evaluate(opt):
         print(" Scaling ratios | med: {:0.3f} | std: {:0.3f}".format(med, np.std(ratios / med)))
 
     mean_errors = np.array(errors).mean(0)
-
+    print(" FPS: ", pred_disps.shape[0]/total_time)
     print("\n  " + ("{:>8} | " * 7).format("abs_rel", "sq_rel", "rmse", "rmse_log", "a1", "a2", "a3"))
     print(("&{: 8.3f}  " * 7).format(*mean_errors.tolist()) + "\\\\")
     print("\n-> Done!")

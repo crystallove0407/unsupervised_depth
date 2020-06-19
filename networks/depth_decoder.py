@@ -12,10 +12,11 @@ import torch.nn as nn
 
 from collections import OrderedDict
 from layers import *
+from .common import conv1x1
 
 
 class DepthDecoder(nn.Module):
-    def __init__(self, num_ch_enc, scales=range(4), num_output_channels=1, use_skips=True):
+    def __init__(self, num_ch_enc, scales=range(4), num_output_channels=1, use_skips=True, skipFirstConv=False, skip2Conv=False, pw=False, oneLayer=False):
         super(DepthDecoder, self).__init__()
 
         self.num_output_channels = num_output_channels
@@ -25,41 +26,70 @@ class DepthDecoder(nn.Module):
 
         self.num_ch_enc = num_ch_enc
         self.num_ch_dec = np.array([16, 32, 64, 128, 256])
+        
+        # Test
+        self.skipFirstConv = skipFirstConv
+        self.skip2Conv = skip2Conv
+        self.pw = pw
+        self.oneLayer = oneLayer
+        
+        if self.skip2Conv:
+            self.skipFirstConv = True
+        if self.oneLayer:
+            self.skipFirstConv = True
+            self.skip2Conv = True
 
         # decoder
         self.convs = OrderedDict()
         for i in range(4, -1, -1):
             # upconv_0
+
             num_ch_in = self.num_ch_enc[-1] if i == 4 else self.num_ch_dec[i + 1]
             num_ch_out = self.num_ch_dec[i]
             self.convs[("upconv", i, 0)] = ConvBlock(num_ch_in, num_ch_out)
 
             # upconv_1
-            num_ch_in = self.num_ch_dec[i]
+            if (self.skipFirstConv and i == 4) or (self.skip2Conv and i == 3) or self.oneLayer:
+                num_ch_in = self.num_ch_enc[-1] if i == 4 else self.num_ch_dec[i + 1]
+            else:
+                num_ch_in = self.num_ch_dec[i]
+            
             if self.use_skips and i > 0:
                 num_ch_in += self.num_ch_enc[i - 1]
             num_ch_out = self.num_ch_dec[i]
             self.convs[("upconv", i, 1)] = ConvBlock(num_ch_in, num_ch_out)
 
         for s in self.scales:
-            self.convs[("dispconv", s)] = Conv3x3(self.num_ch_dec[s], self.num_output_channels)
+            if self.pw:
+                self.convs[("dispconv", s)] = conv1x1(self.num_ch_dec[s], self.num_output_channels)
+            else:
+                self.convs[("dispconv", s)] = Conv3x3(self.num_ch_dec[s], self.num_output_channels)
 
         self.decoder = nn.ModuleList(list(self.convs.values()))
         self.sigmoid = nn.Sigmoid()
+        self.upsample = upsample()
 
-    def forward(self, input_features):
+    def forward(self, f0, f1, f2, f3, f4):
         self.outputs = {}
-
+        input_features = [f0, f1, f2, f3, f4]
         # decoder
-        x = input_features[-1]
+        x = input_features[4]
         for i in range(4, -1, -1):
-            x = self.convs[("upconv", i, 0)](x)
-            x = [upsample(x)]
+            if (self.skipFirstConv and i == 4) or (self.skip2Conv and i == 3) or self.oneLayer:
+                pass
+            else:
+                x = self.convs[("upconv", i, 0)](x)
+            x = [self.upsample(x)]
             if self.use_skips and i > 0:
                 x += [input_features[i - 1]]
             x = torch.cat(x, 1)
             x = self.convs[("upconv", i, 1)](x)
             if i in self.scales:
                 self.outputs[("disp", i)] = self.sigmoid(self.convs[("dispconv", i)](x))
-
         return self.outputs
+
+        
+
+    
+
+        
