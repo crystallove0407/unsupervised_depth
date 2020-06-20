@@ -30,7 +30,7 @@ from collections import OrderedDict
 class Trainer:
     def __init__(self, options):
         self.skipSky = 0
-        self.skyLoss = 1
+        self.skyLoss = 0
         self.opt = options
         self.log_path = os.path.join(self.opt.log_dir, 
                                      "{}_{}x{}".format(self.opt.model_name, 
@@ -70,8 +70,10 @@ class Trainer:
 
         '''Decoder define
         '''
-        self.models["depth"] = networks.DepthDecoder(self.models["encoder"].num_ch_enc, pw=True, oneLayer=True)
-
+        self.models["depth"] = networks.MJDecoder(self.models["encoder"].num_ch_enc)
+#         self.models["depth"] = networks.YSDecoder(self.models["encoder"].num_ch_enc)
+#         self.models["depth"] = networks.OursDecoder(self.models["encoder"].num_ch_enc)
+#         self.models["depth"] = networks.MonoDecoder(self.models["encoder"].num_ch_enc)
         
 
 
@@ -150,18 +152,35 @@ class Trainer:
         self.num_val_samples = len(val_filenames)
         self.num_total_steps = self.num_train_samples // self.opt.batch_size * self.opt.num_epochs
 
-        train_dataset = self.dataset(
-            self.opt.data_path, train_filenames, self.opt.height, self.opt.width,
-            self.opt.frame_ids, 4, is_train=True, img_ext=img_ext)
-        self.train_loader = DataLoader(
-            train_dataset, self.opt.batch_size, True,
-            num_workers=self.opt.num_workers, pin_memory=True, drop_last=True)
-        val_dataset = self.dataset(
-            self.opt.data_path, val_filenames, self.opt.height, self.opt.width,
-            self.opt.frame_ids, 4, is_train=False, img_ext=img_ext)
-        self.val_loader = DataLoader(
-            val_dataset, self.opt.batch_size, True,
-            num_workers=self.opt.num_workers, pin_memory=True, drop_last=True)
+        train_dataset = self.dataset(self.opt.data_path, 
+                                     train_filenames, 
+                                     self.opt.height, 
+                                     self.opt.width,
+                                     self.opt.frame_ids, 
+                                     4, 
+                                     is_train=True, 
+                                     img_ext=img_ext)
+        self.train_loader = DataLoader(train_dataset, 
+                                       self.opt.batch_size, 
+                                       True,
+                                       num_workers=self.opt.num_workers, 
+                                       pin_memory=True, 
+                                       drop_last=True)
+        
+        val_dataset = self.dataset(self.opt.data_path, 
+                                   val_filenames, 
+                                   self.opt.height, 
+                                   self.opt.width,
+                                   self.opt.frame_ids, 
+                                   4, 
+                                   is_train=False, 
+                                   img_ext=img_ext)
+        self.val_loader = DataLoader(val_dataset, 
+                                     self.opt.batch_size, 
+                                     True,
+                                     num_workers=self.opt.num_workers, 
+                                     pin_memory=True, 
+                                     drop_last=True)
         self.val_iter = iter(self.val_loader)
 
         self.writers = {}
@@ -224,7 +243,8 @@ class Trainer:
             start_epoch = 0
             self.step = 0
         self.start_time = time.time()
-        for self.epoch in range(start_epoch, self.opt.num_epochs):
+        for e in range(start_epoch, self.opt.num_epochs):
+            self.epoch = e
             self.run_epoch(self.epoch)
             if (self.epoch + 1) % self.opt.save_frequency == 0:
                 self.save_model()
@@ -522,7 +542,7 @@ class Trainer:
 
             ### 我修改的
             ### 上半部 1/3 不做 mask
-            if self.skipSky == False:
+            if self.skipSky:
                 if not self.opt.disable_automasking:
     #                 add random numbers to break ties
                     identity_reprojection_loss += torch.randn(
@@ -543,7 +563,7 @@ class Trainer:
                 if not self.opt.disable_automasking:
                     # add random numbers to break ties
                     identity_reprojection_loss += torch.randn(
-                        identity_reprojection_loss.shape).cuda() * 0.00001
+                        identity_reprojection_loss.shape).cuda() * 1e-6
 
                     combined = torch.cat((identity_reprojection_loss, reprojection_loss), dim=1) #(B, 4, 256, 832)
                 else:
@@ -572,7 +592,7 @@ class Trainer:
             
             if self.skyLoss:
                 sky_loss = self.get_sky_loss(color, disp)
-                loss += 1e-5 * sky_loss / (2 ** scale)
+                loss += 1e-6 * sky_loss / (2 ** scale)
                 
 #                 print("sky loss:", 1e-5 * sky_loss / (2 ** scale))
 
@@ -670,33 +690,33 @@ class Trainer:
         writer = self.writers[mode]
         for l, v in losses.items():
             writer.add_scalar("{}".format(l), v, self.step)
+        
+#         for j in range(min(4, self.opt.batch_size)):  # write a maxmimum of four images
+#             for s in self.opt.scales:
+#                 for frame_id in self.opt.frame_ids:
+#                     writer.add_image(
+#                         "color_{}_{}/{}".format(frame_id, s, j),
+#                         inputs[("color", frame_id, s)][j].data, self.step)
+#                     if s == 0 and frame_id != 0:
+#                         writer.add_image(
+#                             "color_pred_{}_{}/{}".format(frame_id, s, j),
+#                             outputs[("color", frame_id, s)][j].data, self.step)
 
-        for j in range(min(4, self.opt.batch_size)):  # write a maxmimum of four images
-            for s in self.opt.scales:
-                for frame_id in self.opt.frame_ids:
-                    writer.add_image(
-                        "color_{}_{}/{}".format(frame_id, s, j),
-                        inputs[("color", frame_id, s)][j].data, self.step)
-                    if s == 0 and frame_id != 0:
-                        writer.add_image(
-                            "color_pred_{}_{}/{}".format(frame_id, s, j),
-                            outputs[("color", frame_id, s)][j].data, self.step)
+#                 writer.add_image(
+#                     "disp_{}/{}".format(s, j),
+#                     normalize_image(outputs[("disp", s)][j]), self.step)
 
-                writer.add_image(
-                    "disp_{}/{}".format(s, j),
-                    normalize_image(outputs[("disp", s)][j]), self.step)
+#                 if self.opt.predictive_mask:
+#                     for f_idx, frame_id in enumerate(self.opt.frame_ids[1:]):
+#                         writer.add_image(
+#                             "predictive_mask_{}_{}/{}".format(frame_id, s, j),
+#                             outputs["predictive_mask"][("disp", s)][j, f_idx][None, ...],
+#                             self.step)
 
-                if self.opt.predictive_mask:
-                    for f_idx, frame_id in enumerate(self.opt.frame_ids[1:]):
-                        writer.add_image(
-                            "predictive_mask_{}_{}/{}".format(frame_id, s, j),
-                            outputs["predictive_mask"][("disp", s)][j, f_idx][None, ...],
-                            self.step)
-
-                elif not self.opt.disable_automasking:
-                    writer.add_image(
-                        "automask_{}/{}".format(s, j),
-                        outputs["identity_selection/{}".format(s)][j][None, ...], self.step)
+#                 elif not self.opt.disable_automasking:
+#                     writer.add_image(
+#                         "automask_{}/{}".format(s, j),
+#                         outputs["identity_selection/{}".format(s)][j][None, ...], self.step)
 
     def save_opts(self):
         """Save options to disk so we know what we ran this experiment with

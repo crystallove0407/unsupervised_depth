@@ -3,7 +3,7 @@ from __future__ import absolute_import, division, print_function
 import numpy as np
 import torch
 import torch.nn as nn
-
+import torch.nn.functional as F
 from collections import OrderedDict
 from layers import *
 from .common import dwsconv3x3_block, conv1x1_block, conv1x1
@@ -61,13 +61,13 @@ class DepthToSpace(nn.Module):
 
 
 class MJDecoder(nn.Module):
-    def __init__(self, num_ch_enc, scales=range(4), num_output_channels=1, use_skips=True):
+    def __init__(self, num_ch_enc, use_skips=True):
         super().__init__()
 
-        self.num_output_channels = num_output_channels
+        self.num_output_channels = 1
         self.use_skips = use_skips
         self.upsample_mode = 'nearest'
-        self.scales = scales
+        self.scales = range(4)
 
         self.num_ch_enc = num_ch_enc
         self.num_ch_dec = np.array([16, 24, 32, 64, 128])
@@ -75,29 +75,23 @@ class MJDecoder(nn.Module):
         self.convs = OrderedDict()
 
 #         self.convs[("upconv", 4)] = DepthToSpace(2)
-        self.convs[("upconv", 4)] = nn.PixelShuffle(2)
-#         self.convs[("upconv", 3)] = DepthToSpace(2)
-        self.convs[("upconv", 3)] = nn.PixelShuffle(2)
         self.convs[("bottlenet", 3, 0)] = mobilenetv2_bottlenet(self.num_ch_enc[-1] // 16, self.num_ch_dec[3])
         self.convs[("bottlenet", 3, 1)] = mobilenetv2_bottlenet(self.num_ch_dec[3], self.num_ch_dec[3])
         self.convs[("bottlenet", 3, 2)] = mobilenetv2_bottlenet(self.num_ch_dec[3], self.num_ch_dec[3])
         self.convs[("bottlenet", 3, 3)] = mobilenetv2_bottlenet(self.num_ch_dec[3], self.num_ch_dec[3])
         
-#         self.convs[("upconv", 2)] = DepthToSpace(2)
-        self.convs[("upconv", 2)] = nn.PixelShuffle(2)
+
         self.convs[("bottlenet", 2, 0)] = mobilenetv2_bottlenet((self.num_ch_dec[3] + self.num_ch_enc[2]) // 4, self.num_ch_dec[2])
         self.convs[("bottlenet", 2, 1)] = mobilenetv2_bottlenet(self.num_ch_dec[2], self.num_ch_dec[2])
         self.convs[("bottlenet", 2, 2)] = mobilenetv2_bottlenet(self.num_ch_dec[2], self.num_ch_dec[2])
         
-#         self.convs[("upconv", 1)] = DepthToSpace(2)
-        self.convs[("upconv", 1)] = nn.PixelShuffle(2)
+
         self.convs[("bottlenet", 1, 0)] = mobilenetv2_bottlenet((self.num_ch_dec[2] + self.num_ch_enc[1]) // 4, self.num_ch_dec[1])
         self.convs[("bottlenet", 1, 1)] = mobilenetv2_bottlenet(self.num_ch_dec[1], self.num_ch_dec[1])
         self.convs[("bottlenet", 1, 2)] = mobilenetv2_bottlenet(self.num_ch_dec[1], self.num_ch_dec[1])
         
         
-        self.convs[("upconv", 0)] = DepthToSpace(2)
-        self.convs[("upconv", 0)] = nn.PixelShuffle(2)
+
         self.convs[("bottlenet", 0, 0)] = mobilenetv2_bottlenet((self.num_ch_dec[1] + self.num_ch_enc[0]) // 4, self.num_ch_dec[0])
         self.convs[("bottlenet", 0, 1)] = mobilenetv2_bottlenet(self.num_ch_dec[0], self.num_ch_dec[0])
             
@@ -114,12 +108,12 @@ class MJDecoder(nn.Module):
 
     def forward(self, input_features):
         self.outputs = {}
-
         # decoder
         x = input_features[-1]
-        x = self.convs[("upconv", 4)](x)
+        x = F.pixel_shuffle(x, 4)
+#         x = self.convs[("upconv", 4)](x)
         
-        x = self.convs[("upconv", 3)](x)
+#         x = self.convs[("upconv", 3)](x)
         x = self.convs[("bottlenet", 3, 0)](x)
         x = self.convs[("bottlenet", 3, 1)](x)
         x = self.convs[("bottlenet", 3, 2)](x)
@@ -127,21 +121,24 @@ class MJDecoder(nn.Module):
         d_s = x
         
         x = torch.cat([x, input_features[2]], 1)
-        x = self.convs[("upconv", 2)](x)
+#         x = self.convs[("upconv", 2)](x)
+        x = F.pixel_shuffle(x, 2)
         x = self.convs[("bottlenet", 2, 0)](x)
         x = self.convs[("bottlenet", 2, 1)](x)
         x = self.convs[("bottlenet", 2, 2)](x)
         d_x = x
         
         x = torch.cat([x, input_features[1]], 1)
-        x = self.convs[("upconv", 1)](x)
+#         x = self.convs[("upconv", 1)](x)
+        x = F.pixel_shuffle(x, 2)
         x = self.convs[("bottlenet", 1, 0)](x)
         x = self.convs[("bottlenet", 1, 1)](x)
         x = self.convs[("bottlenet", 1, 2)](x)
         d_l = x
         
         x = torch.cat([x, input_features[0]], 1)
-        x = self.convs[("upconv", 0)](x)
+#         x = self.convs[("upconv", 0)](x)
+        x = F.pixel_shuffle(x, 2)
         x = self.convs[("bottlenet", 0, 0)](x)
         x = self.convs[("bottlenet", 0, 1)](x)
         d_xl = x
@@ -150,6 +147,11 @@ class MJDecoder(nn.Module):
         d_x = self.sigmoid(self.convs[("dispconv", 2)](d_x))
         d_l = self.sigmoid(self.convs[("dispconv", 1)](d_l))
         d_xl = self.sigmoid(self.convs[("dispconv", 0)](d_xl))
+        
+        self.outputs[("disp", 3)] = d_s
+        self.outputs[("disp", 2)] = d_x
+        self.outputs[("disp", 1)] = d_l
+        self.outputs[("disp", 0)] = d_xl
 
-        return d_xl, d_l, d_x, d_s
+        return self.outputs
         

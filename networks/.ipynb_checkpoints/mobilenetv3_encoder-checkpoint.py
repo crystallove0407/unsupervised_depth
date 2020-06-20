@@ -283,5 +283,4 @@ class MobileNetV3(nn.Module):
             x = layer(x)
             if i != 0 and i != 5:
                 self.features.append(x)
-                print(x.shape)
         return self.features

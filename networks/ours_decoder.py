@@ -11,82 +11,125 @@ import torch
 import torch.nn as nn
 
 from collections import OrderedDict
-from .common import conv1x1, conv3x3, conv1x1_block, conv3x3_block, conv5x5_block, dwsconv3x3_block, dwsconv5x5_block
+from .common import conv1x1, conv3x3, conv1x1_block, conv3x3_block, conv5x5_block, dwsconv3x3_block, dwsconv5x5_block, DwsConvBlock
 import torch.nn.functional as F
 
     
 class OursDecoder(nn.Module):
 
-    def __init__(self, num_ch_enc, scales=range(4), num_output_channels=1, use_skips=True, upsample_mode='nearest', dw=False, pw=False):
+    def __init__(self, num_ch_enc, use_skips=True, bn=False, dw=False, pw=False, oneLayer=False, add=False, add_input=False):
         super(OursDecoder, self).__init__()
-        self.num_output_channels = num_output_channels
+        self.num_output_channels = 1
         self.use_skips = use_skips
-        self.upsample_mode = upsample_mode
-        self.scales = scales
+        self.upsample_mode = 'nearest'
+        self.scales = range(4)
         self.convs = OrderedDict()
         self.num_ch_enc = num_ch_enc
-        self.num_ch_dec = np.array([16, 32, 64, 128, 256])
+        self.num_ch_dec = np.array([512, 256, 128, 64, 32, 16])
+        self.ELU = (lambda: nn.ELU(inplace=True))
         
-
-        if dw:
-            self.convs["conv1"] = dwsconv3x3_block(512, 256)
-            self.convs["conv2"] = dwsconv3x3_block(256+self.num_ch_enc[3], 128)
-            self.convs["conv3"] = dwsconv3x3_block(128+self.num_ch_enc[2], 64)
-            self.convs["conv4"] = dwsconv3x3_block(64+self.num_ch_enc[1], 32)
-            self.convs["conv5"] = dwsconv3x3_block(32 +self.num_ch_enc[0], 16)
+        self.bn = bn
+        self.dw = dw
+        self.pw = pw
+        self.oneLayer = oneLayer
+        self.add = add
+        self.add_input = add_input
+        
+        if self.add:
+            self.in_channels = [self.num_ch_enc[-1], 
+                               512, 
+                               256,
+                               128,
+                               64,
+                               32]
         else:
-            self.convs["conv1"] = conv3x3_block(512, 256)
-            self.convs["conv2"] = conv3x3_block(256+self.num_ch_enc[3], 128)
-            self.convs["conv3"] = conv3x3_block(128+self.num_ch_enc[2], 64)
-            self.convs["conv4"] = conv3x3_block(64+self.num_ch_enc[1], 32)
-            self.convs["conv5"] = conv3x3_block(32 +self.num_ch_enc[0], 16)
+            self.in_channels = [self.num_ch_enc[-1], 
+                               512, 
+                               256+self.num_ch_enc[3],
+                               128+self.num_ch_enc[2],
+                               64+self.num_ch_enc[1],
+                               32+self.num_ch_enc[0]]
+            
+        if self.add_input and not self.add:
+            self.in_channels[5] += 3
+            
         
+        for i in range(5):
+            # upconv_0
+            num_ch_in = self.in_channels[i]
+            num_ch_out = self.num_ch_dec[i]
+            if self.dw:
+                self.convs[("conv", i, 0)] = DwsConvBlock(in_channels=num_ch_in,
+                                                out_channels=num_ch_out,
+                                                kernel_size=3,
+                                                stride=1,
+                                                padding=1,
+                                                use_bn=self.bn,
+                                                dw_activation=self.ELU
+                                                pw_activation=self.ELU)
+            else:
+                self.convs[("conv", i, 0)] = conv3x3_block(num_ch_in, 
+                                                           num_ch_out, 
+                                                           use_bn=self.bn, 
+                                                           activation=self.ELU)
+            
+            if not (self.oneLayer and i < 4):
+                # upconv_1
+                num_ch_in = self.num_ch_dec[i]
+                num_ch_out = self.num_ch_dec[i]
+                if self.dw:
+                    self.convs[("conv", i, 1)] = DwsConvBlock(in_channels=num_ch_in,
+                                                    out_channels=num_ch_out,
+                                                    kernel_size=3,
+                                                    stride=1,
+                                                    padding=1,
+                                                    use_bn=self.bn,
+                                                    dw_activation=self.ELU
+                                                    pw_activation=self.ELU)
+                else:
+                    self.convs[("conv", i, 1)] = conv3x3_block(num_ch_in, 
+                                                               num_ch_out, 
+                                                               use_bn=self.bn, 
+                                                               activation=self.ELU)
         
-        if pw == False:
-            self.convs[("dispconv", 3)] = conv3x3(128, self.num_output_channels)
-            self.convs[("dispconv", 2)] = conv3x3(64, self.num_output_channels)
-            self.convs[("dispconv", 1)] = conv3x3(32, self.num_output_channels)
-            self.convs[("dispconv", 0)] = conv3x3(16, self.num_output_channels)
-        else:
+            
+        
+        if self.pw:
             self.convs[("dispconv", 3)] = conv1x1(128, self.num_output_channels)
             self.convs[("dispconv", 2)] = conv1x1(64, self.num_output_channels)
             self.convs[("dispconv", 1)] = conv1x1(32, self.num_output_channels)
             self.convs[("dispconv", 0)] = conv1x1(16, self.num_output_channels)
+        else:
+            self.convs[("dispconv", 3)] = conv3x3(128, self.num_output_channels)
+            self.convs[("dispconv", 2)] = conv3x3(64, self.num_output_channels)
+            self.convs[("dispconv", 1)] = conv3x3(32, self.num_output_channels)
+            self.convs[("dispconv", 0)] = conv3x3(16, self.num_output_channels)
+            
 
         self.decoder = nn.ModuleList(list(self.convs.values()))
         self.sigmoid = nn.Sigmoid()
         
 
-    def forward(self, input_features):
+    def forward(self, input_features, input_image=None):
         self.outputs = {}
-        
-
         x = input_features[-1]
-        x = self.convs["conv1"](x)
-        x = F.interpolate(x, scale_factor=2, mode=self.upsample_mode)
-
-        x = torch.cat((x, input_features[3]), 1)
-        x = self.convs["conv2"](x)
-        x = F.interpolate(x, scale_factor=2, mode=self.upsample_mode)
-        self.outputs[("disp", 3)] = self.sigmoid(self.convs[("dispconv", 3)](x))
-
-        x = torch.cat((x, input_features[2]), 1)
-        x = self.convs["conv3"](x)
-        x = F.interpolate(x, scale_factor=2, mode=self.upsample_mode)
-        self.outputs[("disp", 2)] = self.sigmoid(self.convs[("dispconv", 2)](x))
-
-        x = torch.cat((x, input_features[1]), 1)
-        x = self.convs["conv4"](x)
-        x = F.interpolate(x, scale_factor=2, mode=self.upsample_mode)
-        self.outputs[("disp", 1)] = self.sigmoid(self.convs[("dispconv", 1)](x))
-
-        x = torch.cat((x, input_features[0]), 1)
-        x = self.convs["conv5"](x)
-        x = F.interpolate(x, scale_factor=2, mode=self.upsample_mode)
-        self.outputs[("disp", 0)] = self.sigmoid(self.convs[("dispconv", 0)](x))
         
+        for i in range(5):
+            x = self.convs[("conv", i, 0)](x)
+            x = F.interpolate(x, scale_factor=2, mode=self.upsample_mode)
+            if i < 4 or self.add_input:
+                skip_connect = input_features[3-i] if i < 4 else input_image
+                if self.add:
+                    x += skip_connect
+                else:
+                    x = torch.cat((x, skip_connect), 1)
+                    
+            if not (self.oneLayer and i < 4):
+                x = self.conv[("conv", i, 1)](x)
+            
+            if i > 0:
+                self.outputs[("disp", 4-i)] = self.sigmoid(self.convs[("dispconv", 4-i)](x))
         
-
         return self.outputs
     
 

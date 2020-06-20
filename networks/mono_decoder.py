@@ -14,14 +14,14 @@ from collections import OrderedDict
 from layers import *
 
 
-class DepthDecoder(nn.Module):
-    def __init__(self, num_ch_enc, scales=range(4), num_output_channels=1, use_skips=True):
-        super(DepthDecoder, self).__init__()
+class MonoDecoder(nn.Module):
+    def __init__(self, num_ch_enc, use_skips=True):
+        super(MonoDecoder, self).__init__()
 
-        self.num_output_channels = num_output_channels
+        self.num_output_channels = 1
         self.use_skips = use_skips
         self.upsample_mode = 'nearest'
-        self.scales = scales
+        self.scales = range(4)
 
         self.num_ch_enc = num_ch_enc
         self.num_ch_dec = np.array([16, 32, 64, 128, 256])
@@ -89,4 +89,9 @@ class DepthDecoder(nn.Module):
         d_l  = self.sigmoid(self.convs[("dispconv", 1)](x))
         d_xl = self.sigmoid(self.convs[("dispconv", 0)](x))
 
-        return d_xl, d_l, d_x, d_s
+        self.outputs[("disp", 3)] = d_s
+        self.outputs[("disp", 2)] = d_x
+        self.outputs[("disp", 1)] = d_l
+        self.outputs[("disp", 0)] = d_xl
+
+        return self.outputs

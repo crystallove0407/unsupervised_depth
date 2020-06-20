@@ -14,14 +14,14 @@ from collections import OrderedDict
 from layers import *
 
 
-class DepthDecoder(nn.Module):
-    def __init__(self, num_ch_enc, scales=range(4), num_output_channels=1, use_skips=True):
-        super(DepthDecoder, self).__init__()
+class YSDecoder(nn.Module):
+    def __init__(self, num_ch_enc, use_skips=True):
+        super(YSDecoder, self).__init__()
 
-        self.num_output_channels = num_output_channels
+        self.num_output_channels = 1
         self.use_skips = use_skips
         self.upsample_mode = 'nearest'
-        self.scales = scales
+        self.scales = range(4)
 
         self.num_ch_enc = num_ch_enc
         self.num_ch_dec = np.array([16, 32, 64, 128, 256])
@@ -74,6 +74,7 @@ class DepthDecoder(nn.Module):
 
         self.decoder = nn.ModuleList(list(self.convs.values()))
         self.sigmoid = nn.Sigmoid()
+        self.upsample = upsample()
 
     def forward(self, input_features):
         self.outputs = {}
@@ -82,33 +83,38 @@ class DepthDecoder(nn.Module):
         x = input_features[-1]
         
         # 4
-        x = self.convs[("upconv", 4, 0)](upsample(x))
+        x = self.convs[("upconv", 4, 0)](self.upsample(x))
         x = torch.cat([x, input_features[3]], 1)
         x = self.convs[("upconv", 4, 1)](x)
         
         # 3
-        x = self.convs[("upconv", 3, 0)](upsample(x))
+        x = self.convs[("upconv", 3, 0)](self.upsample(x))
         x = torch.cat([x, input_features[2]], 1)
         x = self.convs[("upconv", 3, 1)](x)
         d_s = self.sigmoid(self.convs[("dispconv", 3)](x))
         
         # 2
-        x = self.convs[("upconv", 2, 0)](upsample(x))
-        x = torch.cat([x, input_features[1], upsample(d_s)], 1)
+        x = self.convs[("upconv", 2, 0)](self.upsample(x))
+        x = torch.cat([x, input_features[1], self.upsample(d_s)], 1)
         x = self.convs[("upconv", 2, 1)](x)
         d_x = self.sigmoid(self.convs[("dispconv", 2)](x))
         
         # 1
-        x = self.convs[("upconv", 1, 0)](upsample(x))
-        x = torch.cat([x, input_features[0], upsample(d_x)], 1)
+        x = self.convs[("upconv", 1, 0)](self.upsample(x))
+        x = torch.cat([x, input_features[0], self.upsample(d_x)], 1)
         x = self.convs[("upconv", 1, 1)](x)
         d_l = self.sigmoid(self.convs[("dispconv", 1)](x))
         
         # 0
-        x = self.convs[("upconv", 0, 0)](upsample(x))
-        x = torch.cat([x, upsample(d_l)], 1)
+        x = self.convs[("upconv", 0, 0)](self.upsample(x))
+        x = torch.cat([x, self.upsample(d_l)], 1)
         x = self.convs[("upconv", 0, 1)](x)
         d_xl = self.sigmoid(self.convs[("dispconv", 0)](x))
+        
+        
+        self.outputs[("disp", 3)] = d_s
+        self.outputs[("disp", 2)] = d_x
+        self.outputs[("disp", 1)] = d_l
+        self.outputs[("disp", 0)] = d_xl
 
-
-        return d_xl, d_l, d_x, d_s
+        return self.outputs

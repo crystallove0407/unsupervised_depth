@@ -69,9 +69,8 @@ class DepthDecoder(nn.Module):
         self.sigmoid = nn.Sigmoid()
         self.upsample = upsample()
 
-    def forward(self, f0, f1, f2, f3, f4):
+    def forward(self, input_features):
         self.outputs = {}
-        input_features = [f0, f1, f2, f3, f4]
         # decoder
         x = input_features[4]
         for i in range(4, -1, -1):

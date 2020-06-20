@@ -142,5 +142,4 @@ class MobileNetV2(nn.Module):
             x = layer(x)
             if i != 0 and i != 5:
                 features.append(x)
-                print(x.shape)
         return features

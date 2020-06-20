@@ -70,5 +70,4 @@ class MobileNet(nn.Module):
             x = layer(x)
             if i != 0:
                 features.append(x)
-                print(x.shape)
         return features
