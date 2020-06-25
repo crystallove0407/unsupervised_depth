@@ -74,7 +74,6 @@ class YSDecoder(nn.Module):
 
         self.decoder = nn.ModuleList(list(self.convs.values()))
         self.sigmoid = nn.Sigmoid()
-        self.upsample = upsample()
 
     def forward(self, input_features):
         self.outputs = {}
@@ -83,38 +82,38 @@ class YSDecoder(nn.Module):
         x = input_features[-1]
         
         # 4
-        x = self.convs[("upconv", 4, 0)](self.upsample(x))
+        x = self.convs[("upconv", 4, 0)](F.interpolate(x, scale_factor=2, mode=self.upsample_mode))
         x = torch.cat([x, input_features[3]], 1)
         x = self.convs[("upconv", 4, 1)](x)
         
         # 3
-        x = self.convs[("upconv", 3, 0)](self.upsample(x))
+        x = self.convs[("upconv", 3, 0)](F.interpolate(x, scale_factor=2, mode=self.upsample_mode))
         x = torch.cat([x, input_features[2]], 1)
         x = self.convs[("upconv", 3, 1)](x)
         d_s = self.sigmoid(self.convs[("dispconv", 3)](x))
         
         # 2
-        x = self.convs[("upconv", 2, 0)](self.upsample(x))
-        x = torch.cat([x, input_features[1], self.upsample(d_s)], 1)
+        x = self.convs[("upconv", 2, 0)](F.interpolate(x, scale_factor=2, mode=self.upsample_mode))
+        x = torch.cat([x, input_features[1], F.interpolate(d_s, scale_factor=2, mode=self.upsample_mode)], 1)
         x = self.convs[("upconv", 2, 1)](x)
         d_x = self.sigmoid(self.convs[("dispconv", 2)](x))
         
         # 1
-        x = self.convs[("upconv", 1, 0)](self.upsample(x))
-        x = torch.cat([x, input_features[0], self.upsample(d_x)], 1)
+        x = self.convs[("upconv", 1, 0)](F.interpolate(x, scale_factor=2, mode=self.upsample_mode))
+        x = torch.cat([x, input_features[0], F.interpolate(d_x, scale_factor=2, mode=self.upsample_mode)], 1)
         x = self.convs[("upconv", 1, 1)](x)
         d_l = self.sigmoid(self.convs[("dispconv", 1)](x))
         
         # 0
-        x = self.convs[("upconv", 0, 0)](self.upsample(x))
-        x = torch.cat([x, self.upsample(d_l)], 1)
+        x = self.convs[("upconv", 0, 0)](F.interpolate(x, scale_factor=2, mode=self.upsample_mode))
+        x = torch.cat([x, F.interpolate(d_l, scale_factor=2, mode=self.upsample_mode)], 1)
         x = self.convs[("upconv", 0, 1)](x)
         d_xl = self.sigmoid(self.convs[("dispconv", 0)](x))
         
         
-        self.outputs[("disp", 3)] = d_s
-        self.outputs[("disp", 2)] = d_x
-        self.outputs[("disp", 1)] = d_l
-        self.outputs[("disp", 0)] = d_xl
+        self.outputs[("disp", 0)] = d_s
+        self.outputs[("disp", 1)] = d_x
+        self.outputs[("disp", 2)] = d_l
+        self.outputs[("disp", 3)] = d_xl
 
         return self.outputs

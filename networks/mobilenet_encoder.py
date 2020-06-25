@@ -23,6 +23,7 @@ class MobileNet(nn.Module):
     def __init__(self,
                  in_channels=3):
         super(MobileNet, self).__init__()
+        self.num_ch_enc = [64, 128, 256, 512, 1024]
         self.channels = [[32], 
                          [64], 
                          [128, 128], 
@@ -66,6 +67,7 @@ class MobileNet(nn.Module):
 
     def forward(self, x):
         features = []
+        x = (input_image - 0.45) / 0.225
         for i, layer in enumerate(self.encoder):
             x = layer(x)
             if i != 0:

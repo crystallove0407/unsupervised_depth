@@ -54,44 +54,47 @@ class MonoDecoder(nn.Module):
         x = input_features[-1]
         
         x = self.convs[("upconv", 4, 0)](x)
-        x = [upsample(x)]
+        x = [F.interpolate(x, scale_factor=2, mode=self.upsample_mode)]
         x += [input_features[3]]
         x = torch.cat(x, 1)
         x = self.convs[("upconv", 4, 1)](x)
         
         
         x = self.convs[("upconv", 3, 0)](x)
-        x = [upsample(x)]
+        x = [F.interpolate(x, scale_factor=2, mode=self.upsample_mode)]
         x += [input_features[2]]
         x = torch.cat(x, 1)
         x = self.convs[("upconv", 3, 1)](x)
         d_s = x
         
         x = self.convs[("upconv", 2, 0)](x)
-        x = [upsample(x)]
+        x = [F.interpolate(x, scale_factor=2, mode=self.upsample_mode)]
         x += [input_features[1]]
         x = torch.cat(x, 1)
         x = self.convs[("upconv", 2, 1)](x)
+        d_x = x
         
         x = self.convs[("upconv", 1, 0)](x)
-        x = [upsample(x)]
+        x = [F.interpolate(x, scale_factor=2, mode=self.upsample_mode)]
         x += [input_features[0]]
         x = torch.cat(x, 1)
         x = self.convs[("upconv", 1, 1)](x)
+        d_l = x
         
         x = self.convs[("upconv", 0, 0)](x)
-        x = [upsample(x)]
+        x = [F.interpolate(x, scale_factor=2, mode=self.upsample_mode)]
         x = torch.cat(x, 1)
         x = self.convs[("upconv", 0, 1)](x)
+        d_xl = x
         
-        d_s  = self.sigmoid(self.convs[("dispconv", 3)](x))
-        d_x  = self.sigmoid(self.convs[("dispconv", 2)](x))
-        d_l  = self.sigmoid(self.convs[("dispconv", 1)](x))
-        d_xl = self.sigmoid(self.convs[("dispconv", 0)](x))
+        d_s  = self.sigmoid(self.convs[("dispconv", 3)](d_s))
+        d_x  = self.sigmoid(self.convs[("dispconv", 2)](d_x))
+        d_l  = self.sigmoid(self.convs[("dispconv", 1)](d_l))
+        d_xl = self.sigmoid(self.convs[("dispconv", 0)](d_xl))
 
-        self.outputs[("disp", 3)] = d_s
-        self.outputs[("disp", 2)] = d_x
-        self.outputs[("disp", 1)] = d_l
-        self.outputs[("disp", 0)] = d_xl
+        self.outputs[("disp", 3)] = d_xl
+        self.outputs[("disp", 2)] = d_l
+        self.outputs[("disp", 1)] = d_x
+        self.outputs[("disp", 0)] = d_s
 
         return self.outputs

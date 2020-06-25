@@ -202,7 +202,7 @@ class MobileNetV3(nn.Module):
                  width_scale=1.0,
                  in_channels=3):
         super(MobileNetV3, self).__init__()
-        self.num_ch_enc = np.array([16, 16, 24, 48, 96, 576])
+        self.num_ch_enc = np.array([16, 24, 40, 112, 960])
         
         if version == "small":
             self.init_block_channels = 16

@@ -29,8 +29,8 @@ from collections import OrderedDict
 
 class Trainer:
     def __init__(self, options):
-        self.skipSky = 0
-        self.skyLoss = 0
+        self.skipSky = 1
+        self.skyLoss = 1
         self.opt = options
         self.log_path = os.path.join(self.opt.log_dir, 
                                      "{}_{}x{}".format(self.opt.model_name, 
@@ -62,6 +62,7 @@ class Trainer:
         self.models["encoder"] = networks.ResnetEncoder(
             self.opt.num_layers, self.opt.weights_init == "pretrained")
 #         self.models["encoder"] = networks.ShuffleNetV2()
+#         self.models["encoder"] = networks.MobileNet()
 #         self.models["encoder"] = networks.MobileNetV2()
 #         self.models["encoder"] = networks.MobileNetV3()
 #         self.models["encoder"] = networks.PeleeNet()
@@ -70,11 +71,17 @@ class Trainer:
 
         '''Decoder define
         '''
-        self.models["depth"] = networks.MJDecoder(self.models["encoder"].num_ch_enc)
+#         self.models["depth"] = networks.MJDecoder(self.models["encoder"].num_ch_enc)
 #         self.models["depth"] = networks.YSDecoder(self.models["encoder"].num_ch_enc)
-#         self.models["depth"] = networks.OursDecoder(self.models["encoder"].num_ch_enc)
 #         self.models["depth"] = networks.MonoDecoder(self.models["encoder"].num_ch_enc)
-        
+        self.models["depth"] = networks.OursDecoder(self.models["encoder"].num_ch_enc,
+                                                    bn=False, 
+                                                    dw=False, 
+                                                    pw=False, 
+                                                    oneLayer=True, 
+                                                    skipAdd=False, 
+                                                    fastdw=True,
+                                                    relu=False)
 
 
         if self.use_pose_net:
@@ -522,23 +529,7 @@ class Trainer:
             else:
                 reprojection_loss = reprojection_losses
 
-#             if not self.opt.disable_automasking:
-#                 #add random numbers to break ties
-#                 identity_reprojection_loss += torch.randn(
-#                     identity_reprojection_loss.shape).cuda() * 0.00001
 
-#                 combined = torch.cat((identity_reprojection_loss, reprojection_loss), dim=1) #(B, 4, 256, 832)
-#             else:
-#                 combined = reprojection_loss
-
-#             if combined.shape[1] == 1:
-#                 to_optimise = combined
-#             else:
-#                 to_optimise, idxs = torch.min(combined, dim=1)
-
-#             if not self.opt.disable_automasking:
-#                 outputs["identity_selection/{}".format(scale)] = (
-#                     idxs > identity_reprojection_loss.shape[1] - 1).float()
 
             ### 我修改的
             ### 上半部 1/3 不做 mask
@@ -559,7 +550,7 @@ class Trainer:
                     outputs["identity_selection/{}".format(scale)][:, :self.opt.height//3, :] = 1.
             ###
             else:
-            #做 Mask的地方值都給最小
+                #做 Mask的地方值都給最小
                 if not self.opt.disable_automasking:
                     # add random numbers to break ties
                     identity_reprojection_loss += torch.randn(
@@ -577,7 +568,7 @@ class Trainer:
                 if not self.opt.disable_automasking:
                     outputs["identity_selection/{}".format(scale)] = (
                         idxs > identity_reprojection_loss.shape[1] - 1).float()
-            ##
+
             
             
             loss += to_optimise.mean()
