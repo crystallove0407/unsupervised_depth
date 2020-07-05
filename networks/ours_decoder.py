@@ -164,6 +164,7 @@ class OursDecoder(nn.Module):
             
             if i > 0:
                 self.outputs[("disp", 4-i)] = self.sigmoid(self.convs[("dispconv", 4-i)](x))
+                # 0:XL, 1:L, 2:X, 3:S
         
         return self.outputs
     

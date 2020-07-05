@@ -26,6 +26,7 @@ import datasets
 import networks
 from IPython import embed
 from collections import OrderedDict
+from PIL import Image
 
 class Trainer:
     def __init__(self, options):
@@ -78,9 +79,9 @@ class Trainer:
                                                     bn=False, 
                                                     dw=False, 
                                                     pw=False, 
-                                                    oneLayer=True, 
+                                                    oneLayer=False, 
                                                     skipAdd=False, 
-                                                    fastdw=True,
+                                                    fastdw=False,
                                                     relu=False)
 
 
@@ -475,9 +476,8 @@ class Trainer:
         """
         losses = {}
         total_loss = 0
-
+        
         for scale in self.opt.scales:
-            loss = 0
             reprojection_losses = []
 
             if self.opt.v1_multiscale:
@@ -535,26 +535,52 @@ class Trainer:
             ### 上半部 1/3 不做 mask
             if self.skipSky:
                 if not self.opt.disable_automasking:
-    #                 add random numbers to break ties
-                    identity_reprojection_loss += torch.randn(
-                        identity_reprojection_loss.shape).cuda() * 1e-6
-
-    #                 min reprojection loss
+#                     add random numbers to break ties
+#                     identity_reprojection_loss += torch.randn(
+#                         identity_reprojection_loss.shape).cuda() * 1e-6
+                    # 算天空的 mask，是天空為 True
+                    if scale == 0:
+                        sky_seg = target
+                        sky_seg = sky_seg.permute(0, 2, 3, 1).cpu().numpy()
+                        sky_seg = (sky_seg * 255).astype(np.uint8)
+                        batch_segImg = self.get_sky_mask(sky_seg)
+                        torch_batch_segImg = torch.from_numpy(batch_segImg).to(self.device)
+                    
+                    # min reprojection loss
                     combined = torch.cat((identity_reprojection_loss, reprojection_loss), dim=1)
                     to_optimise, idxs = torch.min(combined, dim=1)
+                    
+                    
+                    
+                    
+                    # combined 包含 本圖與 [前圖, 後圖, 前圖warp, 後圖warp] 四種 Loss
+                    # 若東西靜止不動，idx 會是前 2 個，為黑色的 pixel
+                    # 反之，為後 2 個，為白色的 pixel
+                    static = (idxs > identity_reprojection_loss.shape[1] - 1).float()
+                    
+                    if self.skyLoss and scale == 0:
+                        all_seg = torch.logical_and(torch_batch_segImg, 1 - static)
+                        disparity = torch.squeeze(disp, 1)
+                        sky_loss = torch.mean(disparity[all_seg])
+                        outputs["identity_selection/{}".format(scale)] = static + torch_batch_segImg
+                    else:
+                        outputs["identity_selection/{}".format(scale)] = static
+                        
+                    # 增加 sky 的 reporj Loss
                     min_reprojection_loss, _ = torch.min(reprojection_loss, dim=1)
-                    to_optimise[:, :self.opt.height//3, :] = min_reprojection_loss[:, :self.opt.height//3, :]
-
-                    outputs["identity_selection/{}".format(scale)] = (
-                        idxs > identity_reprojection_loss.shape[1] - 1).float()
-                    outputs["identity_selection/{}".format(scale)][:, :self.opt.height//3, :] = 1.
+                    min_reprojection_loss = min_reprojection_loss * torch_batch_segImg
+                    to_optimise = to_optimise * (~torch_batch_segImg)
+                    to_optimise += min_reprojection_loss
+                        
+                        
+                    
             ###
             else:
                 #做 Mask的地方值都給最小
                 if not self.opt.disable_automasking:
                     # add random numbers to break ties
-                    identity_reprojection_loss += torch.randn(
-                        identity_reprojection_loss.shape).cuda() * 1e-6
+#                     identity_reprojection_loss += torch.randn(
+#                         identity_reprojection_loss.shape).cuda() * 1e-6
 
                     combined = torch.cat((identity_reprojection_loss, reprojection_loss), dim=1) #(B, 4, 256, 832)
                 else:
@@ -569,67 +595,51 @@ class Trainer:
                     outputs["identity_selection/{}".format(scale)] = (
                         idxs > identity_reprojection_loss.shape[1] - 1).float()
 
-            
-            
-            loss += to_optimise.mean()
-#             print("[info] Total loss")
-#             print("scale", scale)
-#             print("depth loss:", to_optimise.mean())
+            main_loss = to_optimise.mean()
             
             mean_disp = disp.mean(2, True).mean(3, True)
             norm_disp = disp / (mean_disp + 1e-7)
             smooth_loss = get_smooth_loss(norm_disp, color)
-#             print("smooth loss:", self.opt.disparity_smoothness * smooth_loss / (2 ** scale))
-            
-            if self.skyLoss:
-                sky_loss = self.get_sky_loss(color, disp)
-                loss += 1e-6 * sky_loss / (2 ** scale)
-                
-#                 print("sky loss:", 1e-5 * sky_loss / (2 ** scale))
 
-            loss += self.opt.disparity_smoothness * smooth_loss / (2 ** scale)
+            if self.skyLoss and scale == 0:
+                loss = self.opt.disparity_smoothness * smooth_loss / (2 ** scale) \
+                        + main_loss \
+                        + 1e-6 * sky_loss
+                losses[f"loss/{scale}/sky"] = sky_loss
+            else:
+                loss = self.opt.disparity_smoothness * smooth_loss / (2 ** scale) + main_loss
+                    
             total_loss += loss
-            losses["loss/{}".format(scale)] = loss
+            losses[f"loss/{scale}"] = loss
+            losses[f"loss/{scale}/smooth"] = smooth_loss
+            losses[f"loss/{scale}/synthesis"] = main_loss
+            
 
         total_loss /= self.num_scales
         losses["loss"] = total_loss
         return losses
     
-    def get_sky_loss(self, color, disp):
-        loss = 0
-        disparity = disp.permute(0, 2, 3, 1).detach().cpu().numpy()
-        input = color.permute(0, 2, 3, 1).cpu().numpy()
-        input = np.uint8(255 * input)
-        B = input.shape[0]
-        have_sky = 0
-        for i in range(B):
-            segImg = self.get_sky_mask(input[i])
-            
-            sky_disp = segImg * disparity[i].squeeze()
-            if np.sum(sky_disp>0) > 0:
-                sky_disp_mean = sky_disp[sky_disp>0].mean()
-                loss += sky_disp_mean
-                have_sky += 1
-            
-        if have_sky > 0:
-            loss /= have_sky
-        return loss
-    
     def get_sky_mask(self, color):
-        gray = cv2.cvtColor(color, cv2.COLOR_BGR2GRAY)
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))
-        thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
-        thresh_dilation = cv2.dilate(thresh, kernel, anchor=(-1,-1), iterations=8)
-            
-        edges = cv2.Canny(gray, 1, 100)
-        edges_dilation = cv2.dilate(edges, kernel, anchor=(-1,-1), iterations=8)
-            
-        mask = thresh_dilation | edges_dilation
-        mask_dilation = cv2.dilate(mask, kernel, anchor=(-1,-1), iterations=8)
-        segImg = 255 - mask_dilation 
-        segImg[self.opt.height//3:, :] = 0
+        B = color.shape[0]
+        batch_segImg = []
+        for i in range(B):
+            gray = cv2.cvtColor(color[i], cv2.COLOR_BGR2GRAY)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))
+            thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
+            thresh_dilation = cv2.dilate(thresh, kernel, anchor=(-1,-1), iterations=8)
+
+            edges = cv2.Canny(gray, 1, 100)
+            edges_dilation = cv2.dilate(edges, kernel, anchor=(-1,-1), iterations=8)
+
+            mask = thresh_dilation | edges_dilation
+            mask_dilation = cv2.dilate(mask, kernel, anchor=(-1,-1), iterations=8) / 255
+            segImg = 1 - mask_dilation
+            segImg[self.opt.height//3:, :] = 0
+            segImg = segImg.astype(bool)
+            batch_segImg.append(segImg)
+        batch_segImg = np.stack(batch_segImg, axis=0)
         
-        return segImg
+        return batch_segImg
     
     def compute_depth_losses(self, inputs, outputs, losses):
         """Compute depth metrics, to allow monitoring during training

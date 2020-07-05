@@ -92,9 +92,9 @@ class MonoDecoder(nn.Module):
         d_l  = self.sigmoid(self.convs[("dispconv", 1)](d_l))
         d_xl = self.sigmoid(self.convs[("dispconv", 0)](d_xl))
 
-        self.outputs[("disp", 3)] = d_xl
-        self.outputs[("disp", 2)] = d_l
-        self.outputs[("disp", 1)] = d_x
-        self.outputs[("disp", 0)] = d_s
+        self.outputs[("disp", 3)] = d_s
+        self.outputs[("disp", 2)] = d_x
+        self.outputs[("disp", 1)] = d_l
+        self.outputs[("disp", 0)] = d_xl
 
         return self.outputs

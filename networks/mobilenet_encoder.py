@@ -67,7 +67,7 @@ class MobileNet(nn.Module):
 
     def forward(self, x):
         features = []
-        x = (input_image - 0.45) / 0.225
+        x = (x - 0.45) / 0.225
         for i, layer in enumerate(self.encoder):
             x = layer(x)
             if i != 0:
